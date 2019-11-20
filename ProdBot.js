@@ -6,7 +6,9 @@ const snekfetch = require('snekfetch');
 const config = require('./config.json');
 
 let games;
+let debugModeChannel;
 
+//client behavior
 client.on('ready', () => {
 	if (!fs.existsSync('games.dat')) {
 		games = new Map([]);
@@ -24,7 +26,20 @@ client.on('ready', () => {
 		});
 	}
 	console.log('logged in as ${client.user.tag}!');
-	setInterval(tick, 1000*60*1);
+	console.log(config.messageMode);
+	console.log(config.debugUserId);
+	if (config.messageMode === "debug") {
+		console.log(config.debugUserId);
+		client.fetchUser(config.debugUserId)
+		.then(debugUser => {
+			debugUser.createDM()
+			.then(debugUserChannel => debugModeChannel = debugUserChannel);
+		})
+		.then(() => debugModeChannel.send('hurra'))
+		.catch(console.log);
+	}
+	
+	setInterval(tick, 1000*60*1);//start core loop
 });
 
 client.on('message', msg => {
@@ -56,7 +71,7 @@ function tick() {
 	console.log('tick');
 	for (g of games) {
 		let game = g[1];
-		getLlamastring(game.name)
+		getLlamaString(game.name)
 		.then(llamastring => {
 			let due = llamastring.substring(llamastring.indexOf('Next turn due:') + 15, llamastring.indexOf('<br><br><TABLE'));
 			let current = llamastring.substring(llamastring.indexOf('Last updated at') + 16, 
@@ -85,7 +100,7 @@ function tick() {
 			if (notify.size > 0) {
 				let toSend = '';
 				for (player of notify) {
-					toSend += '<@' + p[1].id + '>, ';
+					toSend += '<@' + player.id + '>, ';
 				}
 				toSend += '90 Minutes left to do your turn';
 				channel.send(toSend);
@@ -145,6 +160,10 @@ function tick() {
 					p[1].isNotifiedNewTurn = false;
 				}
 			}
+			//check for stales
+			getStalerString(game.name)//TODO nur einmal
+			.then(stalerString => channel.send(stalerString))
+			.catch(console.log);
 		})
 		.catch(console.log);
 	}
@@ -153,11 +172,11 @@ function tick() {
 //command functions
 function help(msg) {
 	msg.channel.send('Commands are:\n' +
-	'register\n' +
-	'claim <nation>\n' +
-	'unclaim\n' +
-	'admin\n' +
-	'time');
+	config.commandPrefix + 'register <Llamaserver game>\n' +
+	config.commandPrefix + 'claim <nation>\n' +
+	config.commandPrefix + 'unclaim\n' +
+	config.commandPrefix + 'admin\n' +
+	config.commandPrefix + 'time');
 }
 	
 function register(msg, args) {
@@ -166,7 +185,7 @@ function register(msg, args) {
 	}	else if (games.has(msg.channel.id)) {
 		msg.channel.send('That game already exists');
 	} else {
-		getLlamastring(args[0])
+		getLlamaString(args[0])
 		.then(llamastring => {
 			game = new Game(msg.channel.id, args[0]);
 			//console.log(game);
@@ -186,7 +205,7 @@ function claim(msg, args) {
 	} else {
 		let game = games.get(msg.channel.id);
 		let nation = args[0].charAt(0).toUpperCase() + args[0].slice(1);
-		getLlamastring(game.name)
+		getLlamaString(game.name)
 		.then(llamastring => {
 			if (game.players.has(msg.author.id)) {
 				msg.channel.send('You already claimed a nation.');
@@ -239,12 +258,12 @@ function admin(msg) {
 
 function time(msg) {
 	 if (!games.has(msg.channel.id)) {
-		msg.channel.send(`Game not in database. Use ${config.commandPrefix}register`);
+		msg.channel.send(`Channel is not linked to a Llamaserver game. Use ${config.commandPrefix}register`);
 	} else {
 		let game = games.get(msg.channel.id);
-		getLlamastring(game.name)
+		getLlamaString(game.name)
 		.then(llamastring => {
-			let due = llamastring.substring(llamastring.indexOf('Next turn due:') + 15, llamastring.indexOf('<br><br><TABLE'));
+			let due = llamastring.substring(llamastring.indexOf('Next turn due:') + 15, llamastring.indexOf('<br><br>'));
 			let current = llamastring.substring(llamastring.indexOf('Last updated at') + 16, 
 				llamastring.indexOf('<a align="right" href="https://pledgie.com'));
 			let minsLeft = compareDates(current, due);
@@ -255,26 +274,8 @@ function time(msg) {
 	}
 }
 	
-
-//Constructors
-function Game(channelId, name) {
-	this.channelId = channelId;
-	this.name = name;
-	this.players = new Map([]);
-}
-
-function Player(id, nation) {
-	this.id = id;
-	this.nation = nation;
-	this.isAdmin = false;
-	this.isNotified = false;
-	this.isNotifiedUrgent = false;
-	this.isNotifiedLast = false;
-	this.isNotifiedNewTurn = false;
-}
-
 //auxiliary functions
-function getLlamastring(name) {
+function getLlamaString(name) {
 	let url = 'http://www.llamaserver.net/gameinfo.cgi?game=' + name;
 	console.log(url);
 	let request = snekfetch.get(url);
@@ -286,6 +287,33 @@ function getLlamastring(name) {
 			llamastring = llamastring.substr(llamastring.indexOf(name) + name.length);
 			//console.log(llamastring);
 			resolve(llamastring);
+		}
+	}));
+}
+
+function getStalerString(name) {
+	let url = 'http://www.llamaserver.net/doAdminAction.cgi?game=' + name + '&action=showstales';
+	let request = snekfetch.get(url);
+	return new Promise((resolve, reject) => request.on('data', data => {
+		let rawString = data.toString();
+		if (rawString.includes("Sorry, this isn't a real game. Have you been messing with my URL?")) {
+			reject('This game does not exist');
+		}	else {
+			let chunks = rawString.split('<tr>');
+			chunks.shift();
+			chunks.shift();
+			let returnString = '';
+			for (chunk of chunks) {
+				let snippets = chunk.split('&nbsp');
+				if (snippets[snippets.length - 2] === ';Staled') {
+					returnString += snippets[1].trim().substr(1) + ', ';
+				}
+			}
+			if (returnString.length > 0) {
+				returnString = returnString.substr(0, returnString.length - 2);
+				returnString += ' staled';
+			}
+			resolve(returnString);
 		}
 	}));
 }
@@ -361,4 +389,23 @@ function saveGames() {
 	});
 }
 
+function send(channel, message) {
+	if (config.messageMode === "debug") {}
+}
 
+//Constructors
+function Game(channelId, name) {
+	this.channelId = channelId;
+	this.name = name;
+	this.players = new Map([]);
+}
+
+function Player(id, nation) {
+	this.id = id;
+	this.nation = nation;
+	this.isAdmin = false;
+	this.isNotified = false;
+	this.isNotifiedUrgent = false;
+	this.isNotifiedLast = false;
+	this.isNotifiedNewTurn = false;
+}

@@ -1,4 +1,6 @@
 {
-	"commandPrefix": "."
+	"commandPrefix": ".",
+	"debugUserId": "243190274996568064",
+	"messageMode": "debug"
 }
 	
