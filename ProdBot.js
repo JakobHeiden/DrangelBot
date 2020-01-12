@@ -4,7 +4,7 @@ const auth = require('./auth.json');
 const fs = require('fs');
 const snekfetch = require('snekfetch');
 const config = require('./config.json');
-
+//TODO map vs set TODO log
 let games;
 let debugModeChannel;
 
@@ -19,7 +19,7 @@ client.on('ready', () => {
 			if (err) throw err;
 			try {
 				games = gamesFromString(data);
-				console.log('Loading games database');
+				console.log(games);
 			} catch(err) {
 				console.log('Error parsing JSON string:', err);
 			}
@@ -27,19 +27,14 @@ client.on('ready', () => {
 	}
 	console.log('logged in as ${client.user.tag}!');
 	console.log(config.messageMode);
-	console.log(config.debugUserId);
 	if (config.messageMode === "debug") {
-		console.log(config.debugUserId);
 		client.fetchUser(config.debugUserId)
-		.then(debugUser => {
-			debugUser.createDM()
-			.then(debugUserChannel => debugModeChannel = debugUserChannel);
-		})
-		.then(() => debugModeChannel.send('hurra'))
+		.then(debugUser => debugUser.createDM())
+		.then(debugDM => debugModeChannel = debugDM)
 		.catch(console.log);
 	}
-	
 	setInterval(tick, 1000*60*1);//start core loop
+	setInterval(decay, 1000*60*60*24);//increment decayCounter once a day
 });
 
 client.on('message', msg => {
@@ -51,6 +46,8 @@ client.on('message', msg => {
 			help(msg);
 		} else if (command === 'register') {
 			register(msg, args);
+		} else if (command === 'unregister') {
+			unregister(msg);
 		} else if (command === 'claim') {
 			claim(msg, args);
 		}	else if (command === 'unclaim') {
@@ -59,218 +56,342 @@ client.on('message', msg => {
 			admin(msg);
 		} else if (command === 'time' || command === 'timer') {
 			time(msg);
+		} else if (command === 'silent') {
+			silent(msg);
+		} else if (command === 'broadcast') {
+			broadcast(msg);
+		} else {
+			msg.channel.send('unknown command. Use ' + config.commandPrefix + 'help for a list of all commands');
 		}
 	}
 });
 
 client.login(auth.token);
 
-
-//core loop
+//core loop and associated functions, also game decay
 function tick() {
 	console.log('tick');
-	for (g of games) {
+	for (let g of games) {
 		let game = g[1];
 		getLlamaString(game.name)
 		.then(llamastring => {
-			let due = llamastring.substring(llamastring.indexOf('Next turn due:') + 15, llamastring.indexOf('<br><br><TABLE'));
-			let current = llamastring.substring(llamastring.indexOf('Last updated at') + 16, 
-				llamastring.indexOf('<a align="right" href="https://pledgie.com'));
-			let minsLeft = compareDates(current, due);
+			let llData = new LlamaData(llamastring);
+			notifyLate(game, llData);
+			notifyLast(game, llData);
+			checkNewTurn(game, llData);
+		})
+		.then(saveGames)
+		.catch(console.log);
+	}
+}
+
+function notifyLate(game, llData) {
+	let minsLeft = llData.minsLeft;
+	//determine who needs to be notified
+	let toNotify = new Set();
+	let toNotifyUrgent = new Set();
+	for (let p of game.players) {
+		let player = p[1];
+		if (llData.nations.get(player.nation) == false || player.isAdmin) {
+			if (minsLeft <= config.timerLong && !player.isNotified) {
+				toNotify.add(player);
+			}
+			if (minsLeft <= config.timerShort && !player.isNotifiedUrgent) {
+				toNotifyUrgent.add(player);
+			}
+		}
+		//reset flags if appropriate
+		if (minsLeft > config.timerLong) player.isNotified = false;
+		if (minsLeft > config.timerShort) player.isNotifiedUrgent = false;
+	}
+	//console.log(toNotify);
+	//notify these people
+	let channel = client.channels.get(game.channelId);
+	if (toNotify.size > 0) {
+		if (game.silentMode) {
+			for (let player of toNotify) {
+				client.fetchUser(player.id)
+				.then(user => user.createDM())
+				.then(dm => send(dm, '' + config.timerLong + ' minutes left in ' + game.name));
+			}
+		} else {
+			let toSend = '';
+			for (let player of toNotify) {
+				toSend += '<@' + player.id + '>, ';
+			}
+			toSend += config.timerLong + ' Minutes left to do your turn';
+			send(channel, toSend);
+		}
+		for (let player of toNotify) {
+				player.isNotified = true;
+		}
+		//saveGames();
+	}
+	if (toNotifyUrgent.size > 0) {
+		if (game.silentMode) {
+			for (let player of toNotify) {
+				client.fetchUser(player.id)
+				.then(user => user.createDM())
+				.then(dm => send(dm, '' + config.timerShort + ' minutes left in ' + game.name + '!'));
+			}
+		} else {
+			let toSend = '';
+			for (let player of toNotifyUrgent) {
+				toSend += '<@' + player.id + '>, ';
+			}
+			toSend += config.timerShort + ' Minutes left to do your turn!';
+			send(channel, toSend);
+		}
+		for (let player of toNotifyUrgent) {
+				player.isNotifiedUrgent = true;
+		}
+		//saveGames();
+	}		
+}
+
+function notifyLast(game, llData) {
+	let numNationsNotDone = 0;
+	let lastNation;
+	for (let entry of llData.nations) {
+		if (!entry[1]) {
+			numNationsNotDone++;
+			lastNation = entry[0];
+		}
+	}
+	//console.log('numnationsNotDone ' + numNationsNotDone);
+	if (numNationsNotDone == 1) {
+		let lastPlayer;
+		for (let p of game.players) {
+			if (p[1].nation == lastNation) lastPlayer = p[1];
+		}
+		//console.log(lastPlayer);
+		if (lastPlayer != undefined && lastPlayer.isNotifiedLast == false) {
+			//console.log('if');
 			let channel = client.channels.get(game.channelId);
-			//console.log('llamastring ' + llamastring);
-			console.log(minsLeft);
-			//Notifications for those who are running late
-			let notify = new Set();
-			let notifyUrgent = new Set();
-			for (p of game.players) {
-				let player = p[1];
-				let statusString = llamastring.substring(llamastring.indexOf(player.nation) + 57, llamastring.indexOf(player.nation) + 64);
-				if (statusString === 'Waiting' || player.isAdmin) {
-					if (minsLeft <= 90 && !player.isNotified) {
-						notify.add(player);
-					}
-					if (minsLeft <= 15 && !player.isNotifiedUrgent) {
-						notifyUrgent.add(player);
-					}
-				}
-				if (minsLeft > 90) player.isNotified = false;
-				if (minsLeft > 15) player.isNotifiedUrgent = false;
-			}
-			if (notify.size > 0) {
-				let toSend = '';
-				for (player of notify) {
-					toSend += '<@' + player.id + '>, ';
-				}
-				toSend += '90 Minutes left to do your turn';
-				channel.send(toSend);
-				for (player of notify) {
-					player.isNotified = true;
-				}
-			}
-			if (notifyUrgent.size > 0) {
-				let toSend = '';
-				for (player of notifyUrgent) {
-					toSend += '<@' + player.id + '>, ';
-				}
-				toSend += '15 Minutes left to do your turn!';
-				channel.send(toSend);
-				for (player of notifyUrgent) {
-					player.isNotifiedUrgent = true;
-				}
-			}		
-			//Prod the last guy to do his turn
-			//console.log(llamastring);
-			
-			let chunks = llamastring.split('Waiting');
-			if (chunks.length == 2) {
-				for (p of game.players) {
-					let player = p[1];
-					let statusString = llamastring.substring(llamastring.indexOf(player.nation) + 57, llamastring.indexOf(player.nation) + 64);
-					if (statusString === 'Waiting' && !player.isNotifiedLast) {
-						channel.send('<@' + player.id + '> last');
-						player.isNotifiedLast = true;
-					}
-				}
+			if (game.silentMode) {
+				client.fetchUser(lastPlayer.id)
+				.then(user => user.createDM())
+				.then(dm => send(dm, 'Last undone turn in ' + game.name));
 			} else {
-				for (p of game.players) {
-					p[1].isNotifiedLast = false;
-				}
+				send(channel, '<@' + lastPlayer.id + '> last');
 			}
-			//check for new turn
-			if (!llamastring.includes('2h file received')) {
-				let notifyNewTurn = new Set();
-				for (p of game.players) {
-					let player = p[1];
-					if (!player.isNotifiedNewTurn) {
-						notifyNewTurn.add(player);
-						player.isNotifiedNewTurn = true;
+			lastPlayer.isNotifiedLast = true;
+			//saveGames();
+		}
+	} else {//reset flags
+		for (let p of game.players) {
+			p[1].isNotifiedLast = false;
+		}
+		//saveGames();
+	}
+}
+
+function checkNewTurn(game, llData) {
+	let it = llData.nations.values();
+	let nooneHasDoneTheirTurn = true;
+	for (let turnDone of it) {
+		if (turnDone) nooneHasDoneTheirTurn = false;
+	}
+	if (nooneHasDoneTheirTurn) {
+		if (game.isNotifiedNewTurn == false) {
+			let channel = client.channels.get(game.channelId);
+			//check for stales, notify channel of stalers
+			getStalerString(game.name)
+			.then(stalerString => {
+				if (stalerString.length > 0) send(channel, stalerString);
+				});
+			//notify players
+			let toNotifyNewTurn = new Set();
+			for (let p of game.players) {
+				toNotifyNewTurn.add(p[1]);
+			}
+			if (toNotifyNewTurn.size > 0) {
+				if (config.messageMode === 'silent') {
+					for (let player of toNotifyNewTurn) {
+						client.fetchUser(player.id)
+						.then(user => user.createDM())
+						.then(dm => send(dm, 'New turn for ' + player.nation + ' in ' + game.name))
+						.catch(console.log);
 					}
-				}
-				if (notifyNewTurn.size > 0) {
+				} else {
 					let toSend = '';
-					for (player of notifyNewTurn) {
+					for (let player of toNotifyNewTurn) {
 						toSend += '<@' + player.id + '>, ';
 					}
 					toSend += 'new turn';
-					channel.send(toSend);
-				}
-			} else {
-				for (p of game.players) {
-					p[1].isNotifiedNewTurn = false;
+					send(channel, toSend);
 				}
 			}
-			//check for stales
-			getStalerString(game.name)//TODO nur einmal
-			.then(stalerString => channel.send(stalerString))
-			.catch(console.log);
-		})
-		.catch(console.log);
+			game.isNotifiedNewTurn = true;
+			//saveGames();
+		}
+	} else {//somebody has done their turn -> reset the flag for next turn
+		game.isNotifiedNewTurn = false;
+		//saveGames();
+	}	
+}
+
+function decay() {
+	console.log('decay...');
+	for (let g of games) {
+		let game = g[1];
+		getLlamaString(game.name)
+		.catch(() => {
+			game.decayCounter++;
+			console.log(game.decayCounter);
+			if (game.decayCounter > 5) {
+				console.log(games);
+				games.delete(game.channelId);
+				console.log(games);
+				console.log(game.name + ' has decayed.');
+				saveGames();
+			}
+		});
 	}
 }
 
 //command functions
 function help(msg) {
-	msg.channel.send('Commands are:\n' +
+	send(msg.channel, 'Commands are:\n' +
 	config.commandPrefix + 'register <Llamaserver game>\n' +
+	config.commandPrefix + 'unregister\n' +
 	config.commandPrefix + 'claim <nation>\n' +
 	config.commandPrefix + 'unclaim\n' +
 	config.commandPrefix + 'admin\n' +
-	config.commandPrefix + 'time');
+	config.commandPrefix + 'time\n' +
+	config.commandPrefix + 'silent');
 }
-	
+
 function register(msg, args) {
 	if (args.length == 0) {
-		msg.channel.send(`Usage: ${config.commandPrefix}register <name-of-Llamaserver-game>`);
+		send(msg.channel, `Usage: ${config.commandPrefix}register <name-of-Llamaserver-game>`);
 	}	else if (games.has(msg.channel.id)) {
-		msg.channel.send('That game already exists');
+		send(msg.channel, 'This channel already has a game registered. Use ' + config.commandPrefix + 'unregister to remove it');
 	} else {
-		getLlamaString(args[0])
+		getLlamaString(args[0])//will throw an error if game page does not exist
 		.then(llamastring => {
 			game = new Game(msg.channel.id, args[0]);
-			//console.log(game);
 			games.set(msg.channel.id, game);
 			saveGames();
-			msg.channel.send(`Game registered. Players can now ${config.commandPrefix}claim`);
+			send(msg.channel, `Game registered. Players can now ${config.commandPrefix}claim`);
 		})
-		.catch(err => msg.channel.send(err));
+		.catch(err => send(msg.channel, err));
+	}
+}
+
+function unregister(msg) {
+	if (!games.has(msg.channel.id)) {
+		send(msg.channel, 'No game is registered to this channel. Use ' + config.commandPrefix + 'register to register your game');
+	} else {
+		games.delete(msg.channel.id);
+		send(msg.channel, 'Game deleted from database');
+		saveGames();
 	}
 }
 
 function claim(msg, args) {
-	if (args.length == 0) {
-		msg.channel.send(`Usage: ${config.commandPrefix}claim <nation>`);
-	}	else if (!games.has(msg.channel.id)) {
-		msg.channel.send(`Game does not exist. Use ${config.commandPrefix}register`);
+	if (!games.has(msg.channel.id)) {
+		send(msg.channel, `Game is not registered. Use ${config.commandPrefix}register`);
+	} else if (args.length == 0) {
+		send(msg.channel, `Usage: ${config.commandPrefix}claim <nation>`);
 	} else {
 		let game = games.get(msg.channel.id);
 		let nation = args[0].charAt(0).toUpperCase() + args[0].slice(1);
-		getLlamaString(game.name)
-		.then(llamastring => {
-			if (game.players.has(msg.author.id)) {
-				msg.channel.send('You already claimed a nation.');
-			} else if (!llamastring.includes('<td>' + nation.padEnd(15, ' ') + '</td>')) {
-				msg.channel.send('This nation is not in the game.');
-			}	else {
-				let player = new Player(msg.author.id, nation);
-				game.players.set(msg.author.id, player);
-				saveGames();
-				msg.channel.send(`You have claimed the nation ${nation}`);
-			}
-		})
-		.catch(console.log);
+		if (game.players.has(msg.author.id)) {
+			send(msg.channel, 'You already claimed a nation. Use ' + config.commandPrefix + 'unclaim first if you want to switch');
+		} else {
+			getLlamaString(game.name)
+			.then(llamastring => {
+				let llData = new LlamaData(llamastring);
+				if (!llData.nations.has(nation)) {
+					send(msg.channel, 'This nation is not in the game.');
+				}	else {
+					let player = new Player(msg.author.id, nation);
+					game.players.set(msg.author.id, player);
+					saveGames();
+					send(msg.channel, `You have claimed the nation ${nation}`);
+				}
+			})
+			.catch(console.log);
+		}
 	}
 }
 
 function unclaim(msg) {
 	if (!games.has(msg.channel.id)) {
-		msg.channel.send(`Game does not exist. Use ${config.commandPrefix}register`);
+		send(msg.channel, `Game is not registered. Use ${config.commandPrefix}register`);
 	} else {
 		let game = games.get(msg.channel.id);
 		if (!game.players.has(msg.author.id)) {
-			msg.channel.send('You have not yet claimed a nation.');
+			send(msg.channel, 'You have not yet claimed a nation.');
 		} else {
-			msg.channel.send('You have unclaimed the nation ' + game.players.get(msg.author.id).nation);
+			send(msg.channel, 'You have unclaimed the nation ' + game.players.get(msg.author.id).nation);
 			game.players.delete(msg.author.id);
+			saveGames();
 		}
 	}
 }
 
 function admin(msg) {
 	if (!games.has(msg.channel.id)) {
-				msg.channel.send(`Game does not exist. Use ${config.commandPrefix}register`);
+				send(msg.channel, `Game is not registered. Use ${config.commandPrefix}register`);
 	} else {
 			let game = games.get(msg.channel.id);
 			if (!game.players.has(msg.author.id)) {
-				msg.channel.send(`You are not claimed yet. Use ${config.commandPrefix}claim`);
+				send(msg.channel, `You have not claimed a nation yet. Use ${config.commandPrefix}claim`);
 			} else {
 				player = game.players.get(msg.author.id);
 				if (player.isAdmin) {
 					player.isAdmin = false;
-					msg.channel.send('You are no longer an admin.');
+					send(msg.channel, 'You are no longer an admin.');
 				} else {
 					player.isAdmin = true;
-					msg.channel.send('You are now an admin.');
+					send(msg.channel, 'You are now an admin. You will receive notifications when another player is running out of time');
 				}
+				saveGames();
 			}
 	}
 }
 
 function time(msg) {
 	 if (!games.has(msg.channel.id)) {
-		msg.channel.send(`Channel is not linked to a Llamaserver game. Use ${config.commandPrefix}register`);
+		send(msg.channel, `Game is not registered. Use ${config.commandPrefix}register`);
 	} else {
 		let game = games.get(msg.channel.id);
 		getLlamaString(game.name)
 		.then(llamastring => {
-			let due = llamastring.substring(llamastring.indexOf('Next turn due:') + 15, llamastring.indexOf('<br><br>'));
-			let current = llamastring.substring(llamastring.indexOf('Last updated at') + 16, 
-				llamastring.indexOf('<a align="right" href="https://pledgie.com'));
-			let minsLeft = compareDates(current, due);
-			let h = Math.trunc(minsLeft / 60);
-			let m = minsLeft % 60;
-			msg.channel.send(`There are ${h} hours ${m} minutes left`);
+			let llData = new LlamaData(llamastring);
+			let days = Math.trunc(llData.minsLeft / (60*24));
+			let hours = Math.trunc((llData.minsLeft - days*60*24) / 60);
+			let mins = llData.minsLeft % 60;
+			send(msg.channel, `There are ${days} days ${hours} hours ${mins} minutes left`);
 		});
+	}
+}
+
+function silent(msg) {
+	if (!games.has(msg.channel.id)) {
+		send(msg.channel, `Game is not registered. Use ${config.commandPrefix}register`);
+	} else {
+		let game = games.get(msg.channel.id);
+		game.silentMode = !game.silentMode;
+		if (game.silentMode) {
+			msg.channel.send('Silent mode ON. Player notifications will be sent as direct messages');
+		} else {
+			msg.channel.send('Silent mode OFF');
+		}
+		saveGames();
+	}
+}
+
+function broadcast(msg) {
+	if (msg.author.id == config.debugUserId) {
+		for (let g of games) {
+			let channel = client.channels.get(g[1].channelId);
+			send(channel, msg.content.slice(11));
+		}
+	} else {
+		msg.channel.send('Only <@' + config.debugUserId + '> can use this command');
 	}
 }
 	
@@ -285,7 +406,6 @@ function getLlamaString(name) {
 			reject('This game does not exist');
 		}	else {
 			llamastring = llamastring.substr(llamastring.indexOf(name) + name.length);
-			//console.log(llamastring);
 			resolve(llamastring);
 		}
 	}));
@@ -303,7 +423,7 @@ function getStalerString(name) {
 			chunks.shift();
 			chunks.shift();
 			let returnString = '';
-			for (chunk of chunks) {
+			for (let chunk of chunks) {
 				let snippets = chunk.split('&nbsp');
 				if (snippets[snippets.length - 2] === ';Staled') {
 					returnString += snippets[1].trim().substr(1) + ', ';
@@ -320,69 +440,48 @@ function getStalerString(name) {
 
 function gamesToString(games) {
 	let str = '';
-	for (entry of games) {
-		let game = entry[1];
-		str += '(' + game.channelId + '+' + game.name;
-		for (entry2 of game.players) {
-			let player = entry2[1];
-			str += '+' + player.id + '-' + player.nation + '-';
-			if (player.isAdmin) {
-				str += 'a';//admin
-			} else {
-				str += 'u';//user
-			}
+	for (let g of games) {
+		let game = g[1];
+		str += game.channelId + '+' + game.name + '+' + game.silentMode + '+' + game.isNotifiedNewTurn + '+' + game.decayCounter;
+		for (let p of game.players) {
+			let player = p[1];
+			str += '+' + player.id + '-' + player.nation + '-' + player.isAdmin + '-' + player.isNotified + '-' 
+				+ player.isNotifiedUrgent + '-' + player.isNotifiedLast;
 		}
-		str += ')';
+		str += '\n';
 	}
 	return str;
 }
 
 function gamesFromString(str) {
 	let games = new Map();
-	while (str.includes('(')) {
-		let gameData = str.substring(1, str.indexOf(')'));
-		str = str.substring(str.indexOf(')') + 1);
-		gameData = gameData.split('+');
-		let channelId = gameData.shift();
-		let nameOfGame = gameData.shift();
-		let game = new Game(channelId, nameOfGame);
-		for (userData of gameData) {
-			userData = userData.split('-');
-			let id = userData.shift();
-			let name = userData.shift();
-			let player = new Player(id, name)
-			if (userData.shift() === 'a') {
-				player.isAdmin = true;
+	let gameStrings = str.split('\n');
+		gameStrings.pop();//removes newline at end of str
+		for (let gameString of gameStrings) {
+			let chunks = gameString.split('+');
+			let channelId = chunks.shift();
+			let gameName = chunks.shift();
+			let silentMode = (chunks.shift() === 'true');
+			let isNotifiedNewTurn = (chunks.shift() === 'true');
+			let decayCounter = chunks.shift();
+			let game = new Game(channelId, gameName, silentMode, isNotifiedNewTurn, decayCounter);
+			for (let chunk of chunks) {
+				let snippets = chunk.split('-');
+				let id = snippets.shift();
+				let nation = snippets.shift();
+				let isAdmin = (snippets.shift() === 'true');
+				let isNotified = (snippets.shift() === 'true');
+				let isNotifiedUrgent = (snippets.shift() === 'true');
+				let isNotifiedLast = (snippets.shift() === 'true');
+				let player = new Player(id, nation, isAdmin, isNotified, isNotifiedUrgent, isNotifiedLast);
+				game.players.set(id, player);
 			}
-			game.players.set(id, player);
+			games.set(channelId, game);
 		}
-		games.set(channelId, game);
-	}
 	return games;
 }
 
-function compareDates(current, due) {//output in minutes
-	current = current.split(' ');
-	let cTime = current[0];
-	let cHours = parseInt(cTime.substring(0, 2));
-	let cMinutes = parseInt(cTime.substring(3, 5));
-	let cDay = current[3];
-	
-	due = due.split(' ');
-	let dTime = due[0];
-	dHours = parseInt(dTime.substring(0, 2));
-	dMinutes = parseInt(dTime.substring(3, 5));
-	let dDay = due[3];
-	
-	let days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-	cDay = days.indexOf(cDay);
-	dDay = days.indexOf(dDay);
-	if (dDay < cDay) dDay += 7;
-	return (((dDay - cDay) * 24 + (dHours - cHours)) * 60 + (dMinutes - cMinutes));
-}
-
 function saveGames() {
-	//console.log(gamesToString(games));
 	fs.writeFile('games.dat', gamesToString(games), function (err) {
 		if (err) throw err;
 		console.log('Games saved');
@@ -390,22 +489,73 @@ function saveGames() {
 }
 
 function send(channel, message) {
-	if (config.messageMode === "debug") {}
+	if (config.messageMode === "debug") {
+		debugModeChannel.send(message);
+	} else {
+		channel.send(message);
+	}
 }
 
 //Constructors
-function Game(channelId, name) {
-	this.channelId = channelId;
-	this.name = name;
-	this.players = new Map([]);
+function LlamaData(str) {
+	//determine minsLeft
+	let currentYear = new Date().getFullYear();
+	let months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+	
+	let current = str.substring(str.indexOf('Last updated at') + 16, str.indexOf('<a align="right" href="https://pledgie.com'));
+	current = current.split(' ');
+	let timeOfDay = current[0];
+	let cMonth = months.indexOf(current[4]);
+	let cDay = parseInt(current[5].slice(0,-2));
+	let cHours = parseInt(timeOfDay.substring(0, 2));
+	let cMinutes = parseInt(timeOfDay.substring(3, 5));
+	current = new Date(currentYear, cMonth, cDay, cHours, cMinutes);
+	
+	let due = str.substring(str.indexOf('Next turn due:') + 15, str.indexOf('<br><br><TABLE'));
+	due = due.split(' ');
+	timeOfDay = due[0];
+	let dMonth = months.indexOf(due[4]);
+	let dDay = parseInt(due[5].slice(0,-2));
+	let dHours = parseInt(timeOfDay.substring(0, 2));
+	let dMinutes = parseInt(timeOfDay.substring(3, 5));
+	due = new Date(currentYear, dMonth, dDay, dHours, dMinutes);
+	if (current > due) due.setFullYear(due.getFullYear() + 1);
+	
+	this.minsLeft = (due - current) / (1000*60);
+	
+	//fill a map with the nations in the game and wether they have done their turn
+	let nations = new Map();
+	let entries = str.split('<tr><td>');
+	entries.shift();
+	for (let entry of entries) {
+		entry = entry.slice(0, entry.indexOf('</td></tr>'));
+		entry = entry.split(' ');
+		let nation = entry.shift();
+		let isDone;
+		if (entry.pop() === 'received') {
+			isDone = true;
+		} else {
+			isDone = false;
+		}
+		nations.set(nation, isDone);
+	}
+	this.nations = nations;
 }
 
-function Player(id, nation) {
+function Game(channelId, name, silentMode = false, isNotifiedNewTurn = false, decayCounter = 0) {
+	this.channelId = channelId;
+	this.name = name;
+	this.silentMode = silentMode;
+	this.isNotifiedNewTurn = isNotifiedNewTurn;
+	this.players = new Map([]);
+	this.decayCounter = decayCounter;
+}
+
+function Player(id, nation, admin = false, notified = false, notifiedUrgent = false, notifiedLast = false) {
 	this.id = id;
 	this.nation = nation;
-	this.isAdmin = false;
-	this.isNotified = false;
-	this.isNotifiedUrgent = false;
-	this.isNotifiedLast = false;
-	this.isNotifiedNewTurn = false;
+	this.isAdmin = admin;
+	this.isNotified = notified;
+	this.isNotifiedUrgent = notifiedUrgent;
+	this.isNotifiedLast = notifiedLast;
 }

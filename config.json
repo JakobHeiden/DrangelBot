@@ -1,6 +1,8 @@
 {
 	"commandPrefix": ".",
 	"debugUserId": "243190274996568064",
-	"messageMode": "debug"
+	"messageMode": "normal",
+	"timerLong": "90",
+	"timerShort": "15"
 }
 	
