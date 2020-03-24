@@ -1,8 +1,11 @@
 {
-	"commandPrefix": ".",
-	"debugUserId": "243190274996568064",
-	"messageMode": "normal",
+	"commandPrefix": ",",
+	"adminId": "243190274996568064",
 	"timerLong": "90",
-	"timerShort": "15"
+	"timerShort": "15",
+	"decayThreshold": "20",
+	"tickInSeconds": "10",
+	"spamProtectionTimeFrameInMinutes": "22",
+	"spamProtectionMessageTreshold": "10"
 }
 	
