@@ -5,6 +5,7 @@ const fs = require('fs');
 const snekfetch = require('snekfetch');
 const config = require('./config.json');
 const prefix = config.commandPrefix;
+const colors = require('colors');
 
 let gamesById = new Map();
 let unregisterCommandsNotYetConfirmed = new Map();
@@ -916,22 +917,23 @@ function getLlamaString(name) {
 		let llamastring = data.toString();
 		if (llamastring.includes("Sorry, this isn't a real game. Have you been messing with my URL?")) {
 			resolve(undefined);
-		}
-		if (llamastring.includes('This game has not shown any activity for some time')) {
+		} else if (llamastring.includes('This game has not shown any activity for some time')) {
 			resolve(undefined);
+		} else if (false) {//llamastring.includes('difficulty reaching its mail server')) {
+			resolve(undefined);//TODO
 		}
+
 		if (llamastring.includes('Game status</title>')) {
 			resolve(llamastring);
-		}
-		//else
-		reject('llamastring: ' + llamastring);
+		} else reject('llamastring: ' + llamastring);
 	}));
 }
 
 //Constructors
 //------------
-function LlamaData(inputStr) {
+function LlamaData(inputStr) {//TODO rework
 	try {
+		//console.log(inputStr);
 		let str = inputStr;
 		let currentYear = new Date().getFullYear();
 		let months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -939,6 +941,7 @@ function LlamaData(inputStr) {
 		str = str.substring(str.indexOf('Turn number'));
 		let current = str.substring(str.indexOf('Last updated at ') + 16, str.indexOf('<a align="right" href="https://pledgie.com'));
 		current = current.split(' ');
+		console.log('current; '.red + current);
 		let timeOfDay = current[0];
 		let cMonth = months.indexOf(current[4]);
 		let cDay = parseInt(current[5].slice(0,-2));
@@ -946,11 +949,16 @@ function LlamaData(inputStr) {
 		let cMinutes = parseInt(timeOfDay.substring(3, 5));
 		current = new Date(currentYear, cMonth, cDay, cHours, cMinutes);
 
-		let due = str.substring(str.indexOf('Next turn due:') + 15, str.indexOf('<br><br><TABLE'));
+		let due = inputStr.substring(inputStr.indexOf('Next turn due:') + 15);//, str.indexOf('<br><br><TABLE'));
+
+		console.log('duestring: '.red + due);
+		due = due.substring(0, due.indexOf('<br><br><hr') - 1);
+		console.log('duestring: '.red + due);
 		due = due.split(' ');
+		console.log(due);
 		timeOfDay = due[0];
 		let dueMonth = months.indexOf(due[4]);
-		let dueDay = parseInt(due[5].slice(0,-2));
+		let dueDay = parseInt(due[5].substring(0, due[5].slice(0,-2)));
 		let dueHours = parseInt(timeOfDay.substring(0, 2));
 		let dueMinutes = parseInt(timeOfDay.substring(3, 5));
 		due = new Date(currentYear, dueMonth, dueDay, dueHours, dueMinutes);
