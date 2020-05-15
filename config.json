@@ -2,10 +2,13 @@
 	"commandPrefix": ",",
 	"adminId": "243190274996568064",
 	"timerLong": "90",
-	"timerShort": "15",
+	"timerShort": "60",
 	"decayThreshold": "20",
 	"tickInSeconds": "10",
 	"spamProtectionTimeFrameInMinutes": "22",
-	"spamProtectionMessageTreshold": "10"
+	"spamProtectionMessageTreshold": "3",
+	"llamaserverHttpRequestDelay": "300",
+	"numTicksToProcessAllGames": "10",
+	"queueEntriesPerGameWarningThreshold": 20
 }
 	

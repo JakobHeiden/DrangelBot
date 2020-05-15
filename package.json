@@ -1,0 +1,19 @@
+{
+  "name": "prodbot",
+  "version": "1.0.0",
+  "description": "A discord bot that helps interacting with the Llamaserver webpage for the game Dominions 5.",
+  "main": "ProdBot.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Jakob Heiden",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^12.1.1",
+    "express": "^4.17.1",
+    "map.prototype.tojson": "^0.1.3",
+    "node-fetch": "^2.6.0",
+    "snekfetch": "^4.0.4",
+    "xmldom": "^0.1.27"
+  }
+}
