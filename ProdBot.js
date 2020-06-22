@@ -47,7 +47,7 @@ client.on('ready', () => {
 		});
 
 	console.log('starting core loop');
-	client.setInterval(tick, 100 * config.tickInSeconds);
+	client.setInterval(tick, 1000 * config.tickInSeconds);
 	client.setInterval(decay, 1000*60*60*24);
 });
 
@@ -143,15 +143,14 @@ function tick() {
 		let queueLengthTreshold = gamesById.size * config.queueEntriesPerGameWarningThreshold;
 		if (htmlRequestQueue.queue.length > queueLengthTreshold) spamProtectedSend(adminDM, 'queueLengthTreshold exceeded');
 
-		let allGames = [];
+		let allGamesProcessing = [];
 		for (let game of gamesById.values()) {
 			if (!game.isEnabled) continue;
 			if (tickCounter != 0 && !game.isCloseToNewTurn) continue;
 
-			let promisedGame = getLlamaString(game.name)
-				.then(llamaString => {
-					let llamaData = new LlamaData(llamaString);
-					game.isCloseToNewTurn = !(llamaData.minsLeft > config.timerLong * 2);
+			let gameProcessing = getLlamaData(game.name)
+				.then(llamaData => {
+					game.isCloseToNewTurn = (llamaData.minsLeft < config.timerLong * 2);
 					removeDroppedPlayers(game, llamaData);
 					notifyLate(game, llamaData, config.timerLong, false);
 					notifyLate(game, llamaData, config.timerShort, true);
@@ -161,9 +160,9 @@ function tick() {
 				.catch(err => {
 					handleError(err, game.getChannel());
 				});
-			allGames.push(promisedGame);
+			allGamesProcessing.push(gameProcessing);
 		}
-		Promise.all(allGames).then(saveGames).catch(() => console.log('caught'.brightRed));
+		Promise.all(allGamesProcessing).then(saveGames).catch(err => handleError(err));
 	} catch(err) {
 		handleError(err);
 	}
@@ -188,13 +187,16 @@ async function notifyLate(game, llamaData, timer, isUrgent) {
 			}
 			return;
 		}
-
+		//otherwise, do the notification thing
 		let isNotified = isUrgent ? game.isNotifiedUrgent : game.isNotified;
 		if (!isNotified && Array.from(llamaData.isDoneByNation.values()).includes(false)) {
 			//determine who needs to be notified
 			let gamehostIdsToNotify = game.gamehosts;
 			let playerIdsToNotify = new Set();
-			let unclaimedNations = new Set(llamaData.isDoneByNation.keys());//will remove the claimed nations in the following for loop
+			let unclaimedNations = new Set();//llamaData.isDoneByNation.keys());//will remove the claimed nations in the following for loop
+			for (let entry of llamaData.isDoneByNation) {//TODO this is a slightly hacky bandaid
+				if (entry[1] == false) unclaimedNations.add(entry[0]);
+			}
 			for (let player of game.playersById.values()) {
 				if (llamaData.isDoneByNation.get(player.nation) === false) {
 					playerIdsToNotify.add(player.id);
@@ -305,7 +307,7 @@ async function checkNewTurn(game, llamaData) {
 			for (let player of game.playersById.values()) {
 				toNotifyNewTurn.add(player);
 			}
-			if (toNotifyNewTurn.size == 0) return; 
+			//if (toNotifyNewTurn.size == 0) return; 
 
 			//send out notification
 			if (game.isSilentMode) {
@@ -322,6 +324,11 @@ async function checkNewTurn(game, llamaData) {
 				}
 				toSend += 'new turn';
 				spamProtectedSend(channel, toSend);
+				for (let e of llamaData.isDoneByNation) {
+					adminDM.send(e[0], e[1]);
+				}
+				adminDM.send(llamaData.minsLeft);//TODO-
+				adminDM.send(toSend);
 			}
 		}
 	} catch (err) {
@@ -358,7 +365,7 @@ function help(msg) {
 		prefix + 'unregister\n' +
 		prefix + 'claim <nation>\n' +
 		prefix + 'unclaim\n' +
-		prefix + 'assign <discord tag> <nation>\n' +
+		prefix + 'assign <discord tag> OR <nation>\n' +
 		prefix + 'unassign <discord tag> OR <nation>\n' +
 		prefix + 'who\n' +
 		prefix + 'undone\n' +
@@ -585,7 +592,7 @@ async function who(msg) {
 			returnString += nation;
 			let user = users.shift();
 			if (user) {
-				returnString += ': ' + user.toString();
+				returnString += ': ' + user.username;
 			}
 			returnString += ', ';
 		}
@@ -735,7 +742,7 @@ function enable(msg) {
 	saveGames();
 }
 
-function broadcast(msg, args) {
+async function broadcast(msg, args) {
 	if (!msg.author.id == config.adminId) {
 		msg.channel.send('Only <@' + config.adminId + '> can use this command');
 		return;
@@ -744,7 +751,7 @@ function broadcast(msg, args) {
 
 	let stringToBroadcast = msg.content.substring(msg.content.indexOf(' ') + 1);
 	for (let game of gamesById.values()) {
-		let channel = game.getChannel();
+		let channel = await game.getChannel();
 		channel.send(stringToBroadcast)
 	}
 }	
@@ -777,15 +784,23 @@ function confirmShutdown(msg) {
 
 //html request processing
 //-----------------------
-async function getLlamaString(name, isUrgent = false) {
-	try {
-		let url = 'http://www.llamaserver.net/gameinfo.cgi?game=' + name;
-		return new Promise((resolve, reject) => {
-			htmlRequestQueue.addToken({url, resolve, reject}, isUrgent);
-		});
-	} catch (err) {
-		handleError(err);
+async function getLlamaData(name, isUrgent = false) {
+	let llamaString = await getLlamaString(name, isUrgent);
+	let llamaData = new LlamaData(llamaString);
+	if (llamaData.isWellFormed())	{
+		return llamaData;
+	} else {
+		adminDM.send(llamaString);
+		adminDM.send(llamaData.toString());
+		return getLlamaData(name, true);
 	}
+}
+
+async function getLlamaString(name, isUrgent = false) {
+	let url = 'http://www.llamaserver.net/gameinfo.cgi?game=' + name;
+	return new Promise((resolve, reject) => {
+		htmlRequestQueue.addToken({url, resolve, reject}, isUrgent);
+	});
 }
 
 let htmlRequestQueue = {
@@ -835,8 +850,10 @@ async function handleError(err, channel = adminDM) {
 		console.error(err);
 		console.error({gamesById});
 		console.error('-------------------------------------------------------------'.brightRed);
-
-		fs.appendFile('error.log', err + '\r\n', (err2) => {
+		
+		let errorLogText = new Date().toUTCString() + ':\r\n';
+		errorLogText += err.stack + '\r\n';
+		fs.appendFile('error.log', errorLogText, (err2) => {
 			if (err2) throw err2;
 		});
 
@@ -1026,6 +1043,13 @@ async function getStalerString(name) {//error handling is done when calling this
 //Constructors
 //------------
 function LlamaData(llamaString) {
+	this.isWellFormed = function() {
+		if (typeof this.minsLeft != 'number') return false;
+		if (this.isDoneByNation.size == 0) return false;
+	
+		return true;
+	}
+
 	try {
 		let currentYear = new Date().getFullYear();
 		let months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -1033,8 +1057,8 @@ function LlamaData(llamaString) {
 		let current = llamaString.slice(llamaString.indexOf('Last updated at') + 16);
 		current = current.slice(0, current.indexOf('<a align='));
 		current = current.split(' ');
-		if (current == '') throw new TypeError('LlamaData: cHours is not a number');//happens when llamaserver gets
-		let cHours = parseInt(current[0].split(':')[0]);													 //too many requests
+		//if (current == '') throw new TypeError('LlamaData: cHours is not a number');//happens when llamaserver gets
+		let cHours = parseInt(current[0].split(':')[0]);													 //too many requests...?
 		let cMinutes = parseInt(current[0].split(':')[1]);                        
 		let cDay = parseInt(current[5].slice(0,-2));
 		let cMonth = months.indexOf(current[4]);
