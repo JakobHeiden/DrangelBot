@@ -12,6 +12,8 @@ let unregisterCommandsNotYetConfirmed = new Map();
 let shutdownCommandsNotYetConfirmed = new Map();
 let adminDM;//has an added .game property to handle spam protection
 let tickCounter = -1;//serves to only evaluate certain games after a set number of ticks
+let noDateInHtmlErrorCounter = 0;
+let otherErrorCounter = 0;
 
 //client behavior
 //---------------
@@ -49,6 +51,7 @@ client.on('ready', () => {
 	console.log('starting core loop');
 	client.setInterval(tick, 1000 * config.tickInSeconds);
 	client.setInterval(decay, 1000*60*60*24);
+	client.setInterval(dailyReport, 1000*60*60*24);
 });
 
 client.on('message', msg => {
@@ -150,12 +153,19 @@ function tick() {
 
 			let gameProcessing = getLlamaData(game.name)
 				.then(llamaData => {
-					game.isCloseToNewTurn = (llamaData.minsLeft < config.timerLong * 2);
-					removeDroppedPlayers(game, llamaData);
-					notifyLate(game, llamaData, config.timerLong, false);
-					notifyLate(game, llamaData, config.timerShort, true);
-					notifyLast(game, llamaData);
-					checkNewTurn(game, llamaData);
+					if (llamaData == 'game does not exist') {
+						game.getChannel()
+						.then(channel => channel.send('It seems like this Llamaserver game does not exist anymore. I disable it ' +
+							'for now. Either use ' + prefix + 'unregister to delete it, or leave it to decay in about three weeks.'));
+						game.isEnabled = false;
+					} else {
+						game.isCloseToNewTurn = (llamaData.minsLeft < config.timerLong * 2);
+						removeDroppedPlayers(game, llamaData);
+						notifyLate(game, llamaData, config.timerLong, false);
+						notifyLate(game, llamaData, config.timerShort, true);
+						notifyLast(game, llamaData);
+						checkNewTurn(game, llamaData);
+					}
 				})
 				.catch(err => {
 					handleError(err, game.getChannel());
@@ -166,6 +176,12 @@ function tick() {
 	} catch(err) {
 		handleError(err);
 	}
+}
+
+function llamaNotFound(game) {
+	game.isDormant = true;
+	game.getChannel()
+		.then(channel => channel.send('Could not find Llamaserver page for the game...'));
 }
 
 function removeDroppedPlayers(game, llamaData) {
@@ -265,14 +281,14 @@ function notifyLast(game, llamaData) {
 			if (player.nation == lastNation) lastPlayer = player;
 		}
 		if (lastPlayer != undefined && !game.isNotifiedLast) {
-			let channel = game.getChannel();
 			if (game.isSilentMode) {
 				client.users.fetch(lastPlayer.id)
 					.then(user => user.createDM())
 					.then(dm => dm.send('Last undone turn in ' + game.name))
 					.catch(err => handleError(err));
 			} else {
-				spamProtectedSend(channel, '<@' + lastPlayer.id + '> last');
+				game.getChannel()
+					.then(channel => spamProtectedSend(channel, '<@' + lastPlayer.id + '> last'));
 			}
 			game.isNotifiedLast = true;
 		}
@@ -327,7 +343,7 @@ async function checkNewTurn(game, llamaData) {
 				for (let e of llamaData.isDoneByNation) {
 					adminDM.send(e[0], e[1]);
 				}
-				adminDM.send(llamaData.minsLeft);//TODO-
+				adminDM.send(llamaData.minsLeft);//TODO- for now I'd like to know when somebody uses this feature.
 				adminDM.send(toSend);
 			}
 		}
@@ -340,7 +356,7 @@ function decay() {
 	for (let game of gamesById.values()) {
 		getLlamaString(game.name)
 			.then(llamaString => {
-				if (llamaString == undefined) {
+				if (llamaString.includes("Sorry, this isn't a real game. Have you been messing with my URL?")) {
 					game.decayCounter++;
 				} else {
 					game.decayCounter = 0;
@@ -355,6 +371,13 @@ function decay() {
 			})
 			.catch(err => handleError(err));
 	}
+}
+
+function dailyReport() {
+	adminDM.send('noDateInHtmlErrorCounter: ' + noDateInHtmlErrorCounter);
+	noDateInHtmlErrorCounter = 0;
+	adminDM.send('otherErrorCounter: ' + otherErrorCounter);
+	otherErrorCounter = 0;
 }
 
 //command functions
@@ -424,7 +447,7 @@ function confirmUnregister(msg) {
 	saveGames();
 }
 
-function claim(msg, args) {
+async function claim(msg, args) {
 	if (!gamesById.has(msg.channel.id)) {
 		msg.channel.send('Game is not registered. Use ' + prefix + 'register or ' + prefix + 'help');
 		return;
@@ -433,31 +456,35 @@ function claim(msg, args) {
 		msg.channel.send(`Usage: ${prefix}claim <nation>`);
 		return;
 	}
-
 	let game = gamesById.get(msg.channel.id);
 	if (game.playersById.has(msg.author.id)) {
 		msg.channel.send('You already claimed a nation. Use ' + prefix + 'unclaim first if you want to switch');
 		return;
 	}
-	getLlamaString(game.name, true)
-		.then(llamaString => {
-			let llamaData = new LlamaData(llamaString);
-			let nationAsTypedByUser = args.shift();
-			for (let arg of args) {
-				nationAsTypedByUser += ' ' + arg;
-			}
-			let nationToClaim = matchInputToNation(nationAsTypedByUser, llamaData.isDoneByNation.keys());
-			if (nationToClaim == undefined) {
-				msg.channel.send('This nation is not in the game.');
-				return;
-			}
+	llamaString = await getLlamaString(game.name, true);
+	let llamaData = new LlamaData(llamaString);
+	if (llamaData = 'game does not exist') {
+		msg.channel.send('This game does not exist on Llamaserver');
+		return;
+	}
+	if (llamaData = 'no data') {
+		msg.channel.send('Could not parse game page from Lamaserver');
+		return;
+	}
+	let nationAsTypedByUser = args.shift();
+	for (let arg of args) {
+		nationAsTypedByUser += ' ' + arg;
+	}
+	let nationToClaim = matchInputToNation(nationAsTypedByUser, llamaData.isDoneByNation.keys());
+	if (nationToClaim == undefined) {
+		msg.channel.send('This nation is not in the game.');
+		return;
+	}
 
-			let player = new Player(msg.author.id, nationToClaim);
-			game.playersById.set(msg.author.id, player);
-			saveGames();
-			msg.channel.send(`You have claimed the nation ${nationToClaim}`);
-		})
-		.catch(err => handleError(err, msg.channel));
+	let player = new Player(msg.author.id, nationToClaim);
+	game.playersById.set(msg.author.id, player);
+	saveGames();
+	msg.channel.send(`You have claimed the nation ${nationToClaim}`);
 }
 
 function unclaim(msg) {
@@ -784,15 +811,20 @@ function confirmShutdown(msg) {
 
 //html request processing
 //-----------------------
-async function getLlamaData(name, isUrgent = false) {
+async function getLlamaData(name, isUrgent = false, numTries = 0) {
 	let llamaString = await getLlamaString(name, isUrgent);
+	if (llamaString.includes("Sorry, this isn't a real game. Have you been messing with my URL?")) {
+		return 'game does not exist';
+	}
 	let llamaData = new LlamaData(llamaString);
-	if (llamaData.isWellFormed())	{
-		return llamaData;
+	if (!llamaData.isWellFormed()) {
+		if (numTries < 10) {
+			return getLlamaData(name, true, numTries + 1);
+		} else {
+			return 'no data';
+		}
 	} else {
-		adminDM.send(llamaString);
-		adminDM.send(llamaData.toString());
-		return getLlamaData(name, true);
+		return llamaData;
 	}
 }
 
@@ -846,11 +878,12 @@ let htmlRequestQueue = {
 //--------------
 async function handleError(err, channel = adminDM) {
 	try {
+		otherErrorCounter += 1;
 		console.error('============================================================='.brightRed);
 		console.error(err);
 		console.error({gamesById});
 		console.error('-------------------------------------------------------------'.brightRed);
-		
+
 		let errorLogText = new Date().toUTCString() + ':\r\n';
 		errorLogText += err.stack + '\r\n';
 		fs.appendFile('error.log', errorLogText, (err2) => {
@@ -881,11 +914,14 @@ async function handleError(err, channel = adminDM) {
 //-------------------
 async function spamProtectedSend(channel, str) {
 	try {
+		console.log({channel});
 		let game;
 		if (channel == adminDM) {
+			console.log('isAdmin');
 			game = adminDM.game;
 		} else {
 			game = gamesById.get(channel.id);
+			console.log({game});
 		}
 		if (!game.isEnabled) return;
 
@@ -1046,7 +1082,7 @@ function LlamaData(llamaString) {
 	this.isWellFormed = function() {
 		if (typeof this.minsLeft != 'number') return false;
 		if (this.isDoneByNation.size == 0) return false;
-	
+
 		return true;
 	}
 
@@ -1057,7 +1093,7 @@ function LlamaData(llamaString) {
 		let current = llamaString.slice(llamaString.indexOf('Last updated at') + 16);
 		current = current.slice(0, current.indexOf('<a align='));
 		current = current.split(' ');
-		//if (current == '') throw new TypeError('LlamaData: cHours is not a number');//happens when llamaserver gets
+		if (current == '') throw new TypeError('LlamaData: cHours is not a number');//happens when llamaserver gets
 		let cHours = parseInt(current[0].split(':')[0]);													 //too many requests...?
 		let cMinutes = parseInt(current[0].split(':')[1]);                        
 		let cDay = parseInt(current[5].slice(0,-2));
@@ -1087,8 +1123,11 @@ function LlamaData(llamaString) {
 		}
 		this.isDoneByNation = isDoneByNation;
 	} catch (err) {
-		console.error(llamaString);
-		throw err;
+		if (err.message == 'LlamaData: cHours is not a number') {
+			noDateInHtmlErrorCounter += 1;
+		} else {
+			throw err;
+		}
 	}
 }
 
@@ -1098,6 +1137,7 @@ function Game(channelId, name) {
 	this.playersById = new Map();
 	this.gamehosts = new Set();
 	this.isEnabled = true;
+	this.isDormant = false;
 	this.isSilentMode = false;
 	this.isNotifiedNewTurn = false;
 	this.isNotified = false;
