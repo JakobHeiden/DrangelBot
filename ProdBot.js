@@ -412,6 +412,10 @@ function register(msg, args) {
 
 	getLlamaString(args[0], true)
 		.then(llamaString => {
+			if (llamaString.includes('Nations joined so far')) {
+				msg.channel.send('Unable to register a game that has not started yet. This feature will hopefully come soon');
+				return;
+			}
 			game = new Game(msg.channel.id, args[0]);
 			gamesById.set(msg.channel.id, game);
 			saveGames();
