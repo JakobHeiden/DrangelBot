@@ -6,6 +6,7 @@ const fetch = require('node-fetch');
 const config = require('./config.json');
 const prefix = config.commandPrefix;
 const colors = require('colors');
+const generalGameStates = Object.freeze({'FORMING':1, 'RUNNING':2, 'DISABLED':3, 'DORMANT':4, 'OVER':5});
 
 let gamesById = new Map();
 let unregisterCommandsNotYetConfirmed = new Map();
@@ -14,6 +15,7 @@ let adminDM;//has an added .game property to handle spam protection
 let tickCounter = -1;//serves to only evaluate certain games after a set number of ticks
 let noDateInHtmlErrorCounter = 0;
 let otherErrorCounter = 0;
+let htmlRequestQueue;
 
 //client behavior
 //---------------
@@ -82,6 +84,10 @@ client.on('message', msg => {
 		}
 
 		if (msg.channel.type != 'text' && msg.channel.type != 'voice') return;
+
+		if (msg.mentions.has(client.user)) {
+			msg.channel.send("I'm just a humble bot. Go ask <@" + config.adminId + '>, he knows best.');
+		}
 
 		//process commands
 		if (msg.content.startsWith(prefix)) {
@@ -158,6 +164,9 @@ function tick() {
 						.then(channel => channel.send('It seems like this Llamaserver game does not exist anymore. I disable it ' +
 							'for now. Either use ' + prefix + 'unregister to delete it, or leave it to decay in about three weeks.'));
 						game.isEnabled = false;
+					} else if (llamaData == 'llamaserver down') {
+						console.log('llamaserver down'.green);
+						//TODO game status als ENUM; ausserdem llamaserver down -  und nu?
 					} else {
 						game.isCloseToNewTurn = (llamaData.minsLeft < config.timerLong * 2);
 						removeDroppedPlayers(game, llamaData);
@@ -178,7 +187,7 @@ function tick() {
 	}
 }
 
-function llamaNotFound(game) {
+function llamaNotFoundGoDormant(game) {//TODO never used...?
 	game.isDormant = true;
 	game.getChannel()
 		.then(channel => channel.send('Could not find Llamaserver page for the game...'));
@@ -813,6 +822,7 @@ function confirmShutdown(msg) {
 //-----------------------
 async function getLlamaData(name, isUrgent = false, numTries = 0) {
 	let llamaString = await getLlamaString(name, isUrgent);
+	console.log(llamaString);//TODO - / node-fetch Class FetchError?
 	if (llamaString.includes("Sorry, this isn't a real game. Have you been messing with my URL?")) {
 		return 'game does not exist';
 	}
@@ -829,13 +839,13 @@ async function getLlamaData(name, isUrgent = false, numTries = 0) {
 }
 
 async function getLlamaString(name, isUrgent = false) {
-	let url = 'http://www.llamaserver.net/gameinfo.cgi?game=' + name;
+	let url = 'http://www.lamaserver.net/gameinfo.cgi?game=' + name;//TODO repair
 	return new Promise((resolve, reject) => {
 		htmlRequestQueue.addToken({url, resolve, reject}, isUrgent);
 	});
 }
 
-let htmlRequestQueue = {
+htmlRequestQueue = {
 	queue : [],
 	isProcessing : false,
 
@@ -863,6 +873,9 @@ let htmlRequestQueue = {
 					let text = await response.text();
 					token.resolve(text);
 				} catch (err) {
+					if (err.name == 'FetchError') {
+						token.resolve('llamaserver down');
+					}
 					token.reject(err);
 				} finally {
 					setTimeout(htmlRequestQueue.processNext, config.llamaserverHttpRequestDelay);
@@ -914,7 +927,6 @@ async function handleError(err, channel = adminDM) {
 //-------------------
 async function spamProtectedSend(channel, str) {
 	try {
-		console.log({channel});
 		let game;
 		if (channel == adminDM) {
 			console.log('isAdmin');
@@ -1082,7 +1094,6 @@ function LlamaData(llamaString) {
 	this.isWellFormed = function() {
 		if (typeof this.minsLeft != 'number') return false;
 		if (this.isDoneByNation.size == 0) return false;
-
 		return true;
 	}
 
@@ -1136,6 +1147,7 @@ function Game(channelId, name) {
 	this.name = name;
 	this.playersById = new Map();
 	this.gamehosts = new Set();
+	this.state = generalGameStates.FORMING;
 	this.isEnabled = true;
 	this.isDormant = false;
 	this.isSilentMode = false;
@@ -1175,3 +1187,5 @@ function Player(id, nation) {
 	this.id = id;              
 	this.nation = nation;
 }
+
+

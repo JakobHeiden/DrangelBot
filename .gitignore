@@ -1,0 +1,6 @@
+node_modules/
+error.log
+auth.json
+games.dat
+ProdBot.js~
+*.swp
