@@ -1091,12 +1091,6 @@ async function getStalerString(name) {//error handling is done when calling this
 //Constructors
 //------------
 function LlamaData(llamaString) {
-	this.isWellFormed = function() {
-		if (typeof this.minsLeft != 'number') return false;
-		if (this.isDoneByNation.size == 0) return false;
-		return true;
-	}
-
 	try {
 		let currentYear = new Date().getFullYear();
 		let months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -1129,7 +1123,7 @@ function LlamaData(llamaString) {
 		for (let row of llamaTableRows) {
 			let nation = row.slice(0, row.indexOf('</td><td>')).trim();
 			let isDone = row.slice(57,73);
-			isDone = (isDone === '2h file received') ? true : false;
+			isDone = (isDone === '2h file received');
 			isDoneByNation.set(nation, isDone);
 		}
 		this.isDoneByNation = isDoneByNation;
@@ -1139,6 +1133,12 @@ function LlamaData(llamaString) {
 		} else {
 			throw err;
 		}
+	}
+
+	this.isWellFormed = function() {
+		if (typeof this.minsLeft != 'number') return false;
+		if (this.isDoneByNation.size == 0) return false;
+		return true;
 	}
 }
 
