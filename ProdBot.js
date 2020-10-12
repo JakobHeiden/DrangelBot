@@ -187,12 +187,6 @@ function tick() {
 	}
 }
 
-function llamaNotFoundGoDormant(game) {//TODO never used...?
-	game.isDormant = true;
-	game.getChannel()
-		.then(channel => channel.send('Could not find Llamaserver page for the game...'));
-}
-
 function removeDroppedPlayers(game, llamaData) {
 	for (let player of game.playersById.values()) {
 		if (!llamaData.isDoneByNation.has(player.nation)) {
@@ -750,12 +744,12 @@ function disable(msg) {
 		return;
 	}
 	let game = gamesById.get(msg.channel.id);
-	if (!game.isEnabled) {
+	if (game.state == generalGameStates.DISABLED) {
 		msg.channel.send('Game is already disabled');
 		return;
 	}
 
-	game.isEnabled = false;
+	game.state = generalGameStates.DISABLED;
 	msg.channel.send('Game disabled. Notifications and error messages will not be sent. Use ' 
 		+ prefix + 'enable to reverse');
 	saveGames();	
@@ -767,10 +761,15 @@ function enable(msg) {
 		return;
 	}
 	let game = gamesById.get(msg.channel.id);
-	if (game.isEnabled) {
+	if (game.state == generalGameStates.RUNNING) {
 		msg.channel.send('Game is already enabled');
 		return;
 	}
+	if (game.state == generalGameStates.FORMING) {
+		msg.channel.send("Can't disable a game that is still forming");
+		return;//TODO! generell... enum values etc
+	}
+	
 
 	game.isEnabled = true;
 	game.spamProtectionTimestamps = [];
@@ -1148,8 +1147,8 @@ function Game(channelId, name) {
 	this.playersById = new Map();
 	this.gamehosts = new Set();
 	this.state = generalGameStates.FORMING;
-	this.isEnabled = true;
-	this.isDormant = false;
+	//this.isEnabled = true;
+	//this.isDormant = false;//TODO -
 	this.isSilentMode = false;
 	this.isNotifiedNewTurn = false;
 	this.isNotified = false;
