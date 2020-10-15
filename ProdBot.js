@@ -472,12 +472,12 @@ async function claim(msg, args) {
 	}
 	llamaString = await getLlamaString(game.name, true);
 	let llamaData = new LlamaData(llamaString);
-	if (llamaData = 'game does not exist') {
+	if (llamaData == 'game does not exist') {
 		msg.channel.send('This game does not exist on Llamaserver');
 		return;
 	}
-	if (llamaData = 'no data') {
-		msg.channel.send('Could not parse game page from Lamaserver');
+	if (llamaData == 'no data') {
+		msg.channel.send('Could not parse game page from Llamaserver');
 		return;
 	}
 	let nationAsTypedByUser = args.shift();
