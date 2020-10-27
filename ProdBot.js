@@ -340,10 +340,6 @@ async function checkNewTurn(game, llamaData) {
 				}
 				toSend += 'new turn';
 				spamProtectedSend(channel, toSend);
-				for (let e of llamaData.isDoneByNation) {
-					adminDM.send(e[0], e[1]);
-				}
-				adminDM.send(llamaData.minsLeft);//TODO- for now I'd like to know when somebody uses this feature.
 				adminDM.send(toSend);
 			}
 		}
