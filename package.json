@@ -9,6 +9,7 @@
   "author": "Jakob Heiden",
   "license": "ISC",
   "dependencies": {
+    "colors": "^1.4.0",
     "discord.js": "^12.1.1",
     "express": "^4.17.1",
     "map.prototype.tojson": "^0.1.3",

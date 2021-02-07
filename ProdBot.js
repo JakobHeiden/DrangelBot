@@ -14,6 +14,7 @@ let adminDM;//has an added .game property to handle spam protection
 let tickCounter = -1;//serves to only evaluate certain games after a set number of ticks
 let noDateInHtmlErrorCounter = 0;
 let otherErrorCounter = 0;
+let deletionTimeout = config.messageDeletionTimerInMinutes;
 
 //client behavior
 //---------------
@@ -154,10 +155,10 @@ function tick() {
 			let gameProcessing = getLlamaData(game.name)
 				.then(llamaData => {
 					if (llamaData == 'game does not exist') {
-						game.getChannel()
+						/*game.getChannel() TODO replace bandaid with something more substantial
 						.then(channel => channel.send('It seems like this Llamaserver game does not exist anymore. I disable it ' +
 							'for now. Either use ' + prefix + 'unregister to delete it, or leave it to decay in about three weeks.'));
-						game.isEnabled = false;
+						game.isEnabled = false;*/
 					} else {
 						game.isCloseToNewTurn = (llamaData.minsLeft < config.timerLong * 2);
 						removeDroppedPlayers(game, llamaData);
@@ -247,7 +248,8 @@ async function notifyLate(game, llamaData, timer, isUrgent) {
 				for (id of gamehostIdsToNotify) {
 					notificationString += ' <@' + id + '>';
 				}
-				spamProtectedSend(channel, notificationString);
+				spamProtectedSend(channel, notificationString)
+				.then(botReply => botReply.delete(new DeletionTimeout(timer)));
 			}
 			//update game flags
 			if (isUrgent) {
@@ -327,6 +329,7 @@ async function checkNewTurn(game, llamaData) {
 
 			//send out notification
 			if (game.isSilentMode) {
+				adminDM.send(game.name);
 				for (let player of toNotifyNewTurn) {
 					client.users.fetch(player.id)
 						.then(user => user.createDM())
@@ -340,11 +343,6 @@ async function checkNewTurn(game, llamaData) {
 				}
 				toSend += 'new turn';
 				spamProtectedSend(channel, toSend);
-				for (let e of llamaData.isDoneByNation) {
-					adminDM.send(e[0], e[1]);
-				}
-				adminDM.send(llamaData.minsLeft);//TODO- for now I'd like to know when somebody uses this feature.
-				adminDM.send(toSend);
 			}
 		}
 	} catch (err) {
@@ -374,9 +372,13 @@ function decay() {
 }
 
 function dailyReport() {
-	adminDM.send('noDateInHtmlErrorCounter: ' + noDateInHtmlErrorCounter);
+	if (noDateInHtmlErrorCounter > 0) {
+		adminDM.send('noDateInHtmlErrorCounter: ' + noDateInHtmlErrorCounter);
+	}
 	noDateInHtmlErrorCounter = 0;
-	adminDM.send('otherErrorCounter: ' + otherErrorCounter);
+	if (otherErrorCounter > 0) {
+		adminDM.send('otherErrorCounter: ' + otherErrorCounter);
+	}
 	otherErrorCounter = 0;
 }
 
@@ -675,7 +677,9 @@ function undone(msg) {
 			} else {
 				undoneString += ' have not done their turns yet';
 			}
-			msg.channel.send(undoneString);
+			msg.channel.send(undoneString)
+			.then(botReply => botReply.delete(new DeletionTimeout(deletionTimeout)));
+			msg.delete(new DeletionTimeout(deletionTimeout));
 		})
 		.catch(err => handleError(err, msg.channel));
 }
@@ -714,7 +718,10 @@ function time(msg) {
 			if (days > 0) toSend += days + ' days ' + hours + ' hours ';
 			else if (hours > 0) toSend += hours + ' hours ';
 			toSend += mins + ' minutes left.'
-			msg.channel.send(toSend);
+			msg.channel.send(toSend)
+			.then(botReply => botReply.delete(new DeletionTimeout(deletionTimeout)));
+			msg.delete(new DeletionTimeout(deletionTimeout));
+
 		})
 		.catch(err => handleError(err, msg.channel));
 }
@@ -747,6 +754,7 @@ function disable(msg) {
 	}
 
 	game.isEnabled = false;
+	adminDM.send(msg.content);
 	msg.channel.send('Game disabled. Notifications and error messages will not be sent. Use ' 
 		+ prefix + 'enable to reverse');
 	saveGames();	
@@ -936,7 +944,7 @@ async function spamProtectedSend(channel, str) {
 				+ 'Game disabled. Notifications and error messages will not be sent. Use ' + prefix + 'enable to reverse');
 			saveGames();
 		}	else {
-			channel.send(str);
+			return channel.send(str);
 		}
 	} catch (err) {
 		handleError(err);
@@ -1174,4 +1182,8 @@ function Game(channelId, name) {
 function Player(id, nation) {
 	this.id = id;              
 	this.nation = nation;
+}
+
+function DeletionTimeout(time) {
+	this.timeout = time * 60 * 1000;
 }
