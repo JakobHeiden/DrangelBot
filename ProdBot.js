@@ -85,7 +85,7 @@ client.on('message', msg => {
 		if (msg.channel.type != 'text' && msg.channel.type != 'voice') return;
 
 		//process commands
-		if (msg.content.startsWith(prefix)) {
+		if (msg.content.startsWith(prefix)) {//TODO <>?
 			console.log('incoming command: ' + msg.content);
 			let split = msg.content.substr(prefix.length).split(' ');
 			let command = split.shift().toLowerCase();
@@ -390,7 +390,7 @@ function help(msg) {
 		prefix + 'unregister\n' +
 		prefix + 'claim <nation>\n' +
 		prefix + 'unclaim\n' +
-		prefix + 'assign <discord tag> OR <nation>\n' +
+		prefix + 'assign <discord tag> <nation>\n' +
 		prefix + 'unassign <discord tag> OR <nation>\n' +
 		prefix + 'who\n' +
 		prefix + 'undone\n' +
@@ -414,6 +414,15 @@ function register(msg, args) {
 
 	getLlamaString(args[0], true)
 		.then(llamaString => {
+			if (llamaString.includes('Nations joined so far')) {
+				msg.channel.send('Unable to register a game that has not started yet. This feature will hopefully come soon');
+				return;
+			}
+			if (llamaString.includes("this isn't a real game.")) {
+				msg.channel.send('This game does not exist on Llamaserver');
+				return;
+			}
+
 			game = new Game(msg.channel.id, args[0]);
 			gamesById.set(msg.channel.id, game);
 			saveGames();
@@ -465,12 +474,12 @@ async function claim(msg, args) {
 	}
 	llamaString = await getLlamaString(game.name, true);
 	let llamaData = new LlamaData(llamaString);
-	if (llamaData = 'game does not exist') {
+	if (llamaData == 'game does not exist') {
 		msg.channel.send('This game does not exist on Llamaserver');
 		return;
 	}
-	if (llamaData = 'no data') {
-		msg.channel.send('Could not parse game page from Lamaserver');
+	if (llamaData == 'no data') {
+		msg.channel.send('Could not parse game page from Llamaserver');
 		return;
 	}
 	let nationAsTypedByUser = args.shift();
