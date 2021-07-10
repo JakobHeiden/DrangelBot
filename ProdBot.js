@@ -1,6 +1,6 @@
 const Discord = require('discord.js');
 const client = new Discord.Client();
-const auth = require('./auth.json');
+const auth = require('./data/auth.json');
 const fs = require('fs');
 const fetch = require('node-fetch');
 const config = require('./config.json');
@@ -16,26 +16,31 @@ let noDateInHtmlErrorCounter = 0;
 let otherErrorCounter = 0;
 let deletionTimeout = config.messageDeletionTimerInMinutes;
 
+const GamesFilePath = './data/games.dat';
+
 //client behavior
 //---------------
 console.log('attempting Discord login...');
 client.login(auth.token);
 
-client.on('ready', () => {
+client.on('ready', () =>
+{
 	let str = 'logged in as ' + client.user.tag + '!';
 	console.log(str.green);
+
 	//load games from file
-	if (!fs.existsSync('games.dat')) {
+	if ( !fs.existsSync( GamesFilePath ) ) {
 		console.log('games.dat not found, generating empty games.dat');
 		saveGames();
 	} else {
 		console.log('reading games.dat');
-		fs.readFile('games.dat', 'utf8', (err, data) => {
+		fs.readFile( GamesFilePath, 'utf8', (err, data) => {
 			if (err) throw err;
 			gamesById = gamesFromString(data);
 			console.log({gamesById});
 		});
 	}
+
 	//create admin dm channel for error messages
 	client.users.fetch(config.adminId)
 		.then(adminUser => adminUser.createDM())
@@ -1060,10 +1065,11 @@ function gamesFromString(str) {
 	return games;
 }
 
-function saveGames() {
+function saveGames()
+{
 	let stringToSave = gamesToString(gamesById);
 	console.log('Saving:\n' + stringToSave);
-	fs.writeFile('games.dat', stringToSave, function (err) {
+	fs.writeFile( GamesFilePath, stringToSave, function (err) {
 		if (err) throw err;
 	});
 }
