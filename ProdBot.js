@@ -908,7 +908,7 @@ async function handleError(err, channel = adminDM) {
 
 		let errorLogText = new Date().toUTCString() + ':\r\n';
 		errorLogText += err.stack + '\r\n';
-		fs.appendFile('error.log', errorLogText, (err2) => {
+		fs.appendFile( 'data/error.log', errorLogText, (err2) => {
 			if (err2) throw err2;
 		});
 
